@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/passbolt/go-passbolt/api"
 )
@@ -86,67 +87,76 @@ func CreateResourceSimple(ctx context.Context, c *api.Client, folderParentID, na
 }
 
 // GetResource Gets a Resource by ID
-func GetResource(ctx context.Context, c *api.Client, resourceID string) (folderParentID, name, username, uri, password, description string, err error) {
+func GetResource(ctx context.Context, c *api.Client, resourceID string) (folderParentID, name, username, uri, password, description, totp string, err error) {
 	resource, err := c.GetResource(ctx, resourceID)
 	if err != nil {
-		return "", "", "", "", "", "", fmt.Errorf("Getting Resource: %w", err)
+		return "", "", "", "", "", "", "", fmt.Errorf("Getting Resource: %w", err)
 	}
 
 	rType, err := c.GetResourceType(ctx, resource.ResourceTypeID)
 	if err != nil {
-		return "", "", "", "", "", "", fmt.Errorf("Getting ResourceType: %w", err)
+		return "", "", "", "", "", "", "", fmt.Errorf("Getting ResourceType: %w", err)
 	}
 	secret, err := c.GetSecret(ctx, resource.ID)
 	if err != nil {
-		return "", "", "", "", "", "", fmt.Errorf("Getting Resource Secret: %w", err)
+		return "", "", "", "", "", "", "", fmt.Errorf("Getting Resource Secret: %w", err)
 	}
 	return GetResourceFromData(c, *resource, *secret, *rType)
 }
 
 // GetResourceFromData Decrypts Resources using only local data, the Resource object must inlude the secret
-func GetResourceFromData(c *api.Client, resource api.Resource, secret api.Secret, rType api.ResourceType) (folderParentID, name, username, uri, password, description string, err error) {
+func GetResourceFromData(c *api.Client, resource api.Resource, secret api.Secret, rType api.ResourceType) (folderParentID, name, username, uri, password, description, totp string, err error) {
 	var pw string
 	var desc string
+	var totp_code string
 
 	switch rType.Slug {
 	case "password-string":
 		pw, err = c.DecryptMessage(secret.Data)
 		if err != nil {
-			return "", "", "", "", "", "", fmt.Errorf("Decrypting Secret Data: %w", err)
+			return "", "", "", "", "", "", "", fmt.Errorf("Decrypting Secret Data: %w", err)
 		}
 		desc = resource.Description
 	case "password-and-description":
 		rawSecretData, err := c.DecryptMessage(secret.Data)
 		if err != nil {
-			return "", "", "", "", "", "", fmt.Errorf("Decrypting Secret Data: %w", err)
+			return "", "", "", "", "", "", "", fmt.Errorf("Decrypting Secret Data: %w", err)
 		}
 
 		var secretData api.SecretDataTypePasswordAndDescription
 		err = json.Unmarshal([]byte(rawSecretData), &secretData)
 		if err != nil {
-			return "", "", "", "", "", "", fmt.Errorf("Parsing Decrypted Secret Data: %w", err)
+			return "", "", "", "", "", "", "", fmt.Errorf("Parsing Decrypted Secret Data: %w", err)
 		}
 		pw = secretData.Password
 		desc = secretData.Description
 	case "password-description-totp":
 		rawSecretData, err := c.DecryptMessage(secret.Data)
 		if err != nil {
-			return "", "", "", "", "", "", fmt.Errorf("Decrypting Secret Data: %w", err)
+			return "", "", "", "", "", "", "", fmt.Errorf("Decrypting Secret Data: %w", err)
 		}
 
 		var secretData api.SecretDataTypePasswordDescriptionTOTP
 		err = json.Unmarshal([]byte(rawSecretData), &secretData)
 		if err != nil {
-			return "", "", "", "", "", "", fmt.Errorf("Parsing Decrypted Secret Data: %w", err)
+			return "", "", "", "", "", "", "", fmt.Errorf("Parsing Decrypted Secret Data: %w", err)
 		}
 		pw = secretData.Password
 		desc = secretData.Description
+		totp_code, err = GenerateOTPCode(secretData.TOTP.SecretKey, time.Now())
+		if err != nil {
+			return "", "", "", "", "", "", "", fmt.Errorf("Generating OTP Code: %w", err)
+		}
 	case "totp":
-		// nothing fits into the interface in this case
+		var secretData api.SecretDataTypeTOTP
+		totp_code, err = GenerateOTPCode(secretData.TOTP.SecretKey, time.Now())
+		if err != nil {
+			return "", "", "", "", "", "", "", fmt.Errorf("Generating OTP Code: %w", err)
+		}
 	default:
-		return "", "", "", "", "", "", fmt.Errorf("Unknown ResourceType: %v", rType.Slug)
+		return "", "", "", "", "", "", "", fmt.Errorf("Unknown ResourceType: %v", rType.Slug)
 	}
-	return resource.FolderParentID, resource.Name, resource.Username, resource.URI, pw, desc, nil
+	return resource.FolderParentID, resource.Name, resource.Username, resource.URI, pw, desc, totp_code, nil
 }
 
 // UpdateResource Updates all Fields.
